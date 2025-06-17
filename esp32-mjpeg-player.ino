@@ -13,12 +13,15 @@ AsyncUDP udp;
 
 JPEGDEC jpeg;
 
-#define BUFFERED_FRAMES 18
-#define MAX_FRAME_BUFFER 3500
+#define BUFFERED_FRAMES 20
+#define RAW_FRAME_BUFFER_FRAMES 16
+#define MAX_FRAME_BUFFER 4000
 #define PER_FRAME_DELAY_MS 40 // 25 fps
 
+uint8_t rawFrameBuffer[MAX_FRAME_BUFFER * RAW_FRAME_BUFFER_FRAMES];
+
 struct PacketBuffer {
-  uint8_t data[MAX_FRAME_BUFFER];
+  uint8_t* data;
   uint16_t size;
 };
 
@@ -207,11 +210,11 @@ void on_frame() {
 
 int drawMCUs(JPEGDRAW *pDraw) {
 
-  if (pDraw->x > 256 || pDraw->y > 240) {
+  if (pDraw->x > 320 || pDraw->y > 240) {
     return 0;
   }
 
-  int xLimit = min(pDraw->iWidth + pDraw->x, 256) - pDraw->x;
+  int xLimit = min(pDraw->iWidth + pDraw->x, 320) - pDraw->x;
   int yLimit = min(pDraw->iHeight + pDraw->y, 240);
 
   // Serial.printf("Draw pos = %d,%d. size = %d x %d\n", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
@@ -244,10 +247,23 @@ void setup() {
     setCpuFrequencyMhz(240);
     Serial.begin(115200);
 
-    uint8_t* _front_buffer = (uint8_t*)calloc(240*256, 1);
+    uint8_t* _front_buffer = (uint8_t*)calloc(240*320, 1);
     _lines = (uint8_t**) malloc(240 * sizeof(uint8_t*));
     for (int y = 0; y < 240; y++) {
-      _lines[y] = _front_buffer + y*256;
+      _lines[y] = _front_buffer + y*320;
+    }
+
+    for(int i = 0; i < BUFFERED_FRAMES; i++) {
+      if (i < RAW_FRAME_BUFFER_FRAMES) {
+        buffer[i].data = &rawFrameBuffer[i * MAX_FRAME_BUFFER];
+      } else {
+        buffer[i].data = (uint8_t*) malloc(MAX_FRAME_BUFFER);
+        if (!buffer[i].data) {
+          Serial.print("failed to allocate frame buffer ");
+          Serial.println(i);
+        }
+      }
+      buffer[i].size = 0;
     }
 
     print("Connecting...");
@@ -265,8 +281,6 @@ void setup() {
       Serial.print(".");
     }
     Serial.println("");
-
-    buffer[0].size = 0;
 
     if (udp.listen(PORT)) {
       Serial.print("WiFi connected. UDP Listening on IP: ");

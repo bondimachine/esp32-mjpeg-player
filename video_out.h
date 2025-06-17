@@ -414,11 +414,11 @@ void IRAM_ATTR blit_pal(uint8_t* src, uint16_t* dst)
     bool even = _line_counter & 1;
     const uint32_t* p = even ? _palette : _palette + _palette_size;
     int left = 0;
-    int right = 256;
+    int right = 320;
     const uint32_t mask = (_palette_size - 1);
     uint8_t c0,c1,c2,c3,c4;
     uint8_t y1,y2,y3;
-    dst += 88;
+    //dst += 40;
 
     // 4 pixels over 3 color clocks, 12 samples
     // do the blitting
