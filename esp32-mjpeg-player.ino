@@ -13,7 +13,7 @@ AsyncUDP udp;
 
 JPEGDEC jpeg;
 
-#define BUFFERED_FRAMES 20
+#define BUFFERED_FRAMES 10
 #define RAW_FRAME_BUFFER_FRAMES 16
 #define MAX_FRAME_BUFFER 4000
 #define PER_FRAME_DELAY_MS 40 // 25 fps
@@ -205,7 +205,7 @@ const static DRAM_ATTR uint32_t pal_yuyv[] = {
 
 */
 
-void on_frame() {
+void on_frame(uint32_t screen) {
 }
 
 int drawMCUs(JPEGDRAW *pDraw) {
@@ -221,6 +221,7 @@ int drawMCUs(JPEGDRAW *pDraw) {
 
   for (int y = pDraw->y, row = 0; y < yLimit; y++, row++) {
     memcpy(&_lines[y][pDraw->x], ((uint8_t*)pDraw->pPixels) + row * pDraw->iWidth, xLimit);
+    memcpy(&_lines2[y][pDraw->x], ((uint8_t*)pDraw->pPixels) + row * pDraw->iWidth, xLimit);
   }
 
   return 1; // returning true (1) tells JPEGDEC to continue decoding. Returning false (0) would quit decoding immediately.
@@ -229,6 +230,7 @@ int drawMCUs(JPEGDRAW *pDraw) {
 void print(String s) {
   for(int x = 0; x < s.length(); x++) {
     draw_char(_lines, s[x], x+5, 15, 254, 0);
+    draw_char(_lines2, s[x], x+5, 15, 254, 0);
   }
 }
 
@@ -248,10 +250,33 @@ void setup() {
     Serial.begin(115200);
 
     uint8_t* _front_buffer = (uint8_t*)calloc(240*320, 1);
+    if (!_front_buffer) {
+      Serial.println("can't allocate buffer 0");
+    }
+
     _lines = (uint8_t**) malloc(240 * sizeof(uint8_t*));
+    if (!_lines) {
+      Serial.println("can't allocate lines 0");
+    }
     for (int y = 0; y < 240; y++) {
       _lines[y] = _front_buffer + y*320;
     }
+ 
+    #ifdef VIDEO_WALL 
+    uint8_t* _second_screen_buffer = (uint8_t*)calloc(240*320, 1);
+    if (!_second_screen_buffer) {
+      Serial.println("can't allocate buffer 1");
+    }
+
+    _lines2 = (uint8_t**) malloc(240 * sizeof(uint8_t*));
+    if (!_lines2) {
+      Serial.println("can't allocate lines 1");
+    }
+    for (int y = 0; y < 240; y++) {
+      _lines2[y] = _second_screen_buffer + y*320;
+    }
+
+    #endif
 
     for(int i = 0; i < BUFFERED_FRAMES; i++) {
       if (i < RAW_FRAME_BUFFER_FRAMES) {
@@ -269,6 +294,7 @@ void setup() {
     print("Connecting...");
 
     video_init(blacknwhite_4_phase_pal, 256, false);
+    Serial.println("video init done");
 
     xTaskCreatePinnedToCore(render, "render", 1024, NULL, 1, NULL, 0);
 
