@@ -103,7 +103,11 @@ void draw_char(uint8_t** lines_buffer, char c, int x, int y, uint8_t fg, uint8_t
     const uint8_t* src = font6x8_ascii[(c - 32)];
     for (int line = 0; line < 8; line++) {
         for (int col = 0; col < 6; col++) {
-          lines_buffer[y + line][x + col] = (src[col] >> line) & 1 ? fg : bg;
+          #ifndef ROTATE_180  
+            lines_buffer[y + line][x + col] = (src[col] >> line) & 1 ? fg : bg;
+          #else
+            lines_buffer[y + line][x + col] = (src[5 - col] >> (7 - line)) & 1 ? fg : bg;
+          #endif
         }
     }
 }

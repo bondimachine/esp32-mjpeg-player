@@ -1,3 +1,5 @@
+#include "config.h"
+
 #include <Arduino.h>
 #include <JPEGDEC.h>
 #include <WiFi.h>
@@ -6,7 +8,6 @@
 
 #include <esp_task_wdt.h>
 
-#include "config.h"
 AsyncUDP udp;
 
 #include "video_out.h"
@@ -205,22 +206,32 @@ const static DRAM_ATTR uint32_t pal_yuyv[] = {
 
 */
 
+#define WIDTH 320
+#define HEIGHT 240
+
 void on_frame() {
 }
 
 int drawMCUs(JPEGDRAW *pDraw) {
 
-  if (pDraw->x > 320 || pDraw->y > 240) {
+  if (pDraw->x > WIDTH || pDraw->y > HEIGHT) {
     return 0;
   }
 
-  int xLimit = min(pDraw->iWidth + pDraw->x, 320) - pDraw->x;
-  int yLimit = min(pDraw->iHeight + pDraw->y, 240);
+  int xLimit = min(pDraw->iWidth + pDraw->x, WIDTH) - pDraw->x;
+  int yLimit = min(pDraw->iHeight + pDraw->y, HEIGHT);
 
   // Serial.printf("Draw pos = %d,%d. size = %d x %d\n", pDraw->x, pDraw->y, pDraw->iWidth, pDraw->iHeight);
 
   for (int y = pDraw->y, row = 0; y < yLimit; y++, row++) {
-    memcpy(&_lines[y][pDraw->x], ((uint8_t*)pDraw->pPixels) + row * pDraw->iWidth, xLimit);
+    uint8_t* bufferLine = ((uint8_t*)pDraw->pPixels) + row * pDraw->iWidth;
+    #ifndef ROTATE_180
+      memcpy(&_lines[y][pDraw->x], bufferLine, xLimit);
+    #else
+      for(int col = 0; col < xLimit; col++) {
+        _lines[HEIGHT - 1 - y][WIDTH - 1 - pDraw->x - col] = bufferLine[col];
+      }
+    #endif
   }
 
   return 1; // returning true (1) tells JPEGDEC to continue decoding. Returning false (0) would quit decoding immediately.
@@ -228,7 +239,11 @@ int drawMCUs(JPEGDRAW *pDraw) {
 
 void print(String s) {
   for(int x = 0; x < s.length(); x++) {
-    draw_char(_lines, s[x], x+5, 15, 254, 0);
+    #ifndef ROTATE_180  
+      draw_char(_lines, s[x], x+5, 15, 254, 0);
+    #else
+      draw_char(_lines, s[x], (WIDTH/6) - 5 - x, (HEIGHT/8) - 15, 254, 0);
+    #endif
   }
 }
 
@@ -247,10 +262,13 @@ void setup() {
     setCpuFrequencyMhz(240);
     Serial.begin(115200);
 
-    uint8_t* _front_buffer = (uint8_t*)calloc(240*320, 1);
-    _lines = (uint8_t**) malloc(240 * sizeof(uint8_t*));
-    for (int y = 0; y < 240; y++) {
-      _lines[y] = _front_buffer + y*320;
+    Serial.print("PSRAM ");
+    Serial.println(ESP.getPsramSize());
+
+    uint8_t* _front_buffer = (uint8_t*)calloc(HEIGHT*WIDTH, 1);
+    _lines = (uint8_t**) malloc(HEIGHT * sizeof(uint8_t*));
+    for (int y = 0; y < HEIGHT; y++) {
+      _lines[y] = _front_buffer + y*WIDTH;
     }
 
     for(int i = 0; i < BUFFERED_FRAMES; i++) {
