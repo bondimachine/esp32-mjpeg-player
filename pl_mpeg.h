@@ -540,7 +540,7 @@ void plm_buffer_destroy(plm_buffer_t *self);
 // passed in length, except when the buffer was created _with_memory() for
 // which _write() is forbidden.
 
-uint32_t plm_buffer_write(plm_buffer_t *self, uint8_t *bytes, uint32_t length);
+uint32_t plm_buffer_write(plm_buffer_t *self, const uint8_t *bytes, uint32_t length);
 
 
 // Mark the current byte length as the end of this buffer and signal that no 
@@ -1499,7 +1499,7 @@ size_t plm_buffer_get_remaining(plm_buffer_t *self) {
 	return self->length - (self->bit_index >> 3);
 }
 
-uint32_t plm_buffer_write(plm_buffer_t *self, uint8_t *bytes, uint32_t length) {
+uint32_t plm_buffer_write(plm_buffer_t *self, const uint8_t *bytes, uint32_t length) {
 	if (self->mode == PLM_BUFFER_MODE_FIXED_MEM) {
 		return 0;
 	}

@@ -6,6 +6,7 @@
 #include "font.h"
 
 #include <esp_task_wdt.h>
+#include "esp_heap_caps.h"
 
 AsyncUDP udp;
 
@@ -47,13 +48,13 @@ volatile uint32_t writeIndex = 0;
 
 #else
 
-// #define PL_MPEG_IMPLEMENTATION
-// #include "pl_mpeg.h"
+#define PL_MPEG_IMPLEMENTATION
+#include "pl_mpeg.h"
 
-// #define BUFFER_SIZE 1024 * 4
+#define BUFFER_SIZE 1024 * 4
 
-// plm_buffer_t * videoBuffer;
-// plm_video_t * videoDecoder;
+plm_buffer_t * videoBuffer;
+plm_video_t * videoDecoder;
 
 #endif
 
@@ -203,6 +204,7 @@ void onTsd(TSDemuxContext *ctx, uint16_t pid, TSDEventId event_id, void *data) {
       };
     } else if(event_id == TSD_EVENT_PES) {
         TSDPESPacket *pes = (TSDPESPacket*) data;
+#ifndef MPEG
         writeIndex++;
         PacketBuffer* currentBuffer = &buffer[writeIndex % BUFFERED_FRAMES];
         if (pes->data_bytes_length < MAX_FRAME_BUFFER) {
@@ -211,8 +213,10 @@ void onTsd(TSDemuxContext *ctx, uint16_t pid, TSDEventId event_id, void *data) {
         } else {
           Serial.printf("frame too big %d", pes->data_bytes_length);
         }
+#else
+        plm_buffer_write(videoBuffer, pes->data_bytes, pes->data_bytes_length);
+#endif
     }
-
 }
 
 
@@ -228,13 +232,19 @@ void print(String s) {
   }
 }
 
+void heap_caps_alloc_failed_hook(size_t requested_size, uint32_t caps, const char *function_name) {
+  Serial.printf("%s was called but failed to allocate %d bytes with 0x%X capabilities. \n", function_name, requested_size, caps);
+}
+
 
 void setup() {
     setCpuFrequencyMhz(240);
     Serial.begin(115200);
 
-    Serial.print("PSRAM ");
-    Serial.println(ESP.getPsramSize());
+    esp_err_t error = heap_caps_register_failed_alloc_callback(heap_caps_alloc_failed_hook);
+
+    Serial.printf("Total memory %d - Free %d - Largest block %d\n", heap_caps_get_total_size(MALLOC_CAP_8BIT), heap_caps_get_free_size(MALLOC_CAP_8BIT), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    Serial.printf("32 bit Total memory %d - Free %d - Largest block %d\n", heap_caps_get_total_size(MALLOC_CAP_32BIT), heap_caps_get_free_size(MALLOC_CAP_32BIT), heap_caps_get_largest_free_block(MALLOC_CAP_32BIT));
 
     uint8_t* _front_buffer = (uint8_t*)calloc(HEIGHT*WIDTH, 1);
     _lines = (uint8_t**) malloc(HEIGHT * sizeof(uint8_t*));
@@ -255,22 +265,26 @@ void setup() {
       }
       buffer[i].size = 0;
     }
+#else
+    Serial.println("Creating buffer");
+    videoBuffer = plm_buffer_create_with_capacity(BUFFER_SIZE);
+    if (!videoBuffer) {
+      Serial.println("Failed to create buffer");
+    }
+
+    Serial.println("Creating decoder");
+		videoDecoder = plm_video_create_with_buffer(videoBuffer, TRUE);
+
+    if (!videoDecoder) {
+      Serial.println("Failed to create video decoder instance");
+    }
+
 #endif
 
 #ifndef MPEGTS
     udp.onPacket(onMJPEGPacket);
 #else
 
-    // videoBuffer = plm_buffer_create_with_capacity(BUFFER_SIZE);
-    // if (!videoBuffer) {
-    //   Serial.println("Failed to create buffer");
-    // }
-
-		// videoDecoder = plm_video_create_with_buffer(videoBuffer, TRUE);
-
-    // if (!videoDecoder) {
-    //   Serial.println("Failed to create video decoder instance");;
-    // }
 
     tsd_context_init(&tsdCtx);
 
@@ -340,8 +354,12 @@ void render(void* ignored) {
       }
       readIndex++;
 #else
+    // TODO: use timing from MPEGTS
     if ((now - lastFrame) >= PER_FRAME_DELAY_MS) {
-    //   plm_decode(plm, 0.04);
+			plm_frame_t *frame = plm_video_decode(videoDecoder);
+			if (frame) {
+        Serial.printf("frame %f\n", frame->time);
+      }  
 #endif
 
       lastFrame = now;
