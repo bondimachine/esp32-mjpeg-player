@@ -18,12 +18,24 @@ struct PacketBuffer {
   uint16_t size;
 };
 
+#if defined(MPEG) && !defined(MPEGTS)
+#define MPEGTS 1
+#endif 
+
+#ifdef MPEGTS
+#include "tsdemux.h"
+#endif
 
 #ifndef MPEG
 #include <JPEGDEC.h>
 JPEGDEC jpeg;
 
-#define BUFFERED_FRAMES 20
+#ifndef MPEGTS
+#define BUFFERED_FRAMES 18
+#else
+#define BUFFERED_FRAMES 16
+#endif
+
 #define RAW_FRAME_BUFFER_FRAMES 16
 #define MAX_FRAME_BUFFER 4000
 
@@ -32,25 +44,18 @@ uint8_t rawFrameBuffer[MAX_FRAME_BUFFER * RAW_FRAME_BUFFER_FRAMES];
 struct PacketBuffer buffer[BUFFERED_FRAMES];
 uint32_t readIndex = 0;
 volatile uint32_t writeIndex = 0;
-bool discard = false;
 
 #else
 
-#define PL_MPEG_IMPLEMENTATION
-#include "pl_mpeg.h"
+// #define PL_MPEG_IMPLEMENTATION
+// #include "pl_mpeg.h"
 
-#include "tsdemux.h"
+// #define BUFFER_SIZE 1024 * 4
 
-#define BUFFER_SIZE 1024 * 4
+// plm_buffer_t * videoBuffer;
+// plm_video_t * videoDecoder;
 
-plm_buffer_t * videoBuffer;
-plm_video_t * videoDecoder;
-
-PacketBuffer rest;
-
-TSDemuxContext ctx;
-
-#endif 
+#endif
 
 #include "palette.h"
 
@@ -85,7 +90,9 @@ int drawMCUs(JPEGDRAW *pDraw) {
 
   return 1; // returning true (1) tells JPEGDEC to continue decoding. Returning false (0) would quit decoding immediately.
 }
+#endif
 
+#ifndef MPEGTS
 int eoi(uint8_t* data, uint16_t size) {
   if (size >= 2) {
     for(int i=0; i<size-1; i++) {
@@ -96,6 +103,8 @@ int eoi(uint8_t* data, uint16_t size) {
   }
   return -1;
 }
+
+bool discard = false;
 
 void onMJPEGPacket(AsyncUDPPacket packet) {
 
@@ -128,22 +137,80 @@ void onMJPEGPacket(AsyncUDPPacket packet) {
 
 #else 
 
+
+PacketBuffer rest;
+
+TSDemuxContext tsdCtx;
+
+void onMPEGTSPacket(AsyncUDPPacket packet) {
+
+    size_t parsed = 0; // number of bytes parsed by the demuxer.
+
+    size_t to_skip = 0;
+
+    if (rest.size > 0) {
+      to_skip = TSD_TSPACKET_SIZE - rest.size;
+      if (packet.length() >= to_skip) {
+        memcpy(rest.data + rest.size, packet.data(), to_skip);   
+        TSDCode res = tsd_demux(&tsdCtx, rest.data, TSD_TSPACKET_SIZE, &parsed);
+        rest.size = 0;
+        if (res) {
+          Serial.printf("Error decoding rest %d\n", res);
+        }
+        if (parsed != TSD_TSPACKET_SIZE) {
+          Serial.printf("Rest non parsed? %d\n", parsed);
+        }
+      }
+    }
+
+    if (packet.length() < to_skip) {
+      Serial.printf("packet too small %d", packet.length());
+      memcpy(rest.data + rest.size, packet.data(), packet.length());
+      rest.size += packet.length();
+    } else if (packet.length() == to_skip) {
+      // we consumed it all!
+      return;
+    }
+
+    
+    TSDCode res = tsd_demux(&tsdCtx, packet.data() + to_skip, packet.length() - to_skip, &parsed);
+
+    if (res) {
+      Serial.printf("TS demux error %d\n", res);
+      rest.size = 0; // discard all this thing
+    } else {
+      rest.size = packet.length() - to_skip - parsed;
+      if (rest.size > TSD_TSPACKET_SIZE) {
+        Serial.printf("TS demux rest too big? %d\n", rest.size);
+        rest.size = 0; // discard...
+      } else if (rest.size > 0) {
+        memcpy(rest.data, packet.data() + to_skip + parsed, rest.size);
+      }
+    }
+
+}
+
 void onTsd(TSDemuxContext *ctx, uint16_t pid, TSDEventId event_id, void *data) {
     if (event_id == TSD_EVENT_PMT) {
       TSDPMTData *pmt = (TSDPMTData*) data;
       for(int i=0;i<pmt->program_elements_length; ++i) {
         TSDProgramElement *prog = &pmt->program_elements[i];
         // printf("PMT pid: 0x%x, stream_type: 0x%0x\n", prog->elementary_pid, prog->stream_type);
-        if (prog->stream_type == TSD_PMT_STREAM_TYPE_VIDEO || prog->stream_type == TSD_PMT_STREAM_TYPE_VIDEO_H262) {
+        if (prog->stream_type == TSD_PMT_STREAM_TYPE_VIDEO || prog->stream_type == TSD_PMT_STREAM_TYPE_VIDEO_H262 || 
+            prog->stream_type == TSD_PMT_STREAM_TYPE_PES_PRV) { // prv = mjpeg inside TS
           tsd_register_pid(ctx, prog->elementary_pid, TSD_REG_PES);
         }
       };
     } else if(event_id == TSD_EVENT_PES) {
         TSDPESPacket *pes = (TSDPESPacket*) data;
-        // This is where we would write the PES data into our buffer.
-        // Serial.printf("\n====================\n");
-        // Serial.printf("PID 0x%x PES Packet, Size: %d, stream_id=0x%x, pts=%llu, dts=%llu\n", pid, pes->data_bytes_length, pes->stream_id, pes->pts, pes->dts);
-        
+        writeIndex++;
+        PacketBuffer* currentBuffer = &buffer[writeIndex % BUFFERED_FRAMES];
+        if (pes->data_bytes_length < MAX_FRAME_BUFFER) {
+          currentBuffer->size = pes->data_bytes_length;
+          memcpy(currentBuffer->data, pes->data_bytes, currentBuffer->size);
+        } else {
+          Serial.printf("frame too big %d", pes->data_bytes_length);
+        }
     }
 
 }
@@ -188,7 +255,9 @@ void setup() {
       }
       buffer[i].size = 0;
     }
+#endif
 
+#ifndef MPEGTS
     udp.onPacket(onMJPEGPacket);
 #else
 
@@ -203,63 +272,14 @@ void setup() {
     //   Serial.println("Failed to create video decoder instance");;
     // }
 
-    tsd_context_init(&ctx);
+    tsd_context_init(&tsdCtx);
 
-    tsd_set_event_callback(&ctx, onTsd);
+    tsd_set_event_callback(&tsdCtx, onTsd);
 
     rest.data = (uint8_t*)malloc(TSD_TSPACKET_SIZE);
     rest.size = 0;
 
-    udp.onPacket([](AsyncUDPPacket packet) {
-
-      size_t parsed = 0; // number of bytes parsed by the demuxer.
-
-      size_t to_skip = 0;
-
-      if (rest.size > 0) {
-        to_skip = TSD_TSPACKET_SIZE - rest.size;
-        if (packet.length() >= to_skip) {
-          memcpy(rest.data + rest.size, packet.data(), to_skip);   
-          TSDCode res = tsd_demux(&ctx, rest.data, TSD_TSPACKET_SIZE, &parsed);
-          rest.size = 0;
-          if (res) {
-            Serial.printf("Error decoding rest %d\n", res);
-          }
-          if (parsed != TSD_TSPACKET_SIZE) {
-            Serial.printf("Rest non parsed? %d\n", parsed);
-          }
-        }
-      }
-
-      if (packet.length() < to_skip) {
-        Serial.printf("packet too small %d", packet.length());
-        memcpy(rest.data + rest.size, packet.data(), packet.length());
-        rest.size += packet.length();
-      } else if (packet.length() == to_skip) {
-        // we consumed it all!
-        return;
-      }
-
-      
-      TSDCode res = tsd_demux(&ctx, packet.data() + to_skip, packet.length() - to_skip, &parsed);
-
-      if (res) {
-        Serial.printf("TS demux error %d\n", res);
-        rest.size = 0; // discard all this thing
-      } else {
-        rest.size = packet.length() - to_skip - parsed;
-        if (rest.size > TSD_TSPACKET_SIZE) {
-          Serial.printf("TS demux rest too big? %d\n", rest.size);
-          rest.size = 0; // discard...
-        } else if (rest.size > 0) {
-          memcpy(rest.data, packet.data() + to_skip + parsed, rest.size);
-        }
-      }
-
-
-      // plm_buffer_write(inputBuffer, packet.data(), packet.length());
-
-    });
+    udp.onPacket(onMPEGTSPacket);
 #endif 
 
     print("Connecting...");
@@ -306,9 +326,9 @@ void render(void* ignored) {
     unsigned long now = millis();
 
 #ifndef MPEG
+    // TODO: use timing from MPEGTS if available
     if (readIndex < writeIndex && ((now - lastFrame) >= PER_FRAME_DELAY_MS)) {  // force fps
       PacketBuffer* currentBuffer = &buffer[readIndex % BUFFERED_FRAMES];
-      // if (jpeg.openFLASH((uint8_t *)sample_image, sizeof(sample_image), drawMCUs)) {
       if (jpeg.openRAM(currentBuffer->data, currentBuffer->size, drawMCUs)) {
         jpeg.setPixelType(EIGHT_BIT_GRAYSCALE);
         if (!jpeg.decode(0, 0, JPEG_LUMA_ONLY)) {
