@@ -141,8 +141,8 @@ void onTsd(TSDemuxContext *ctx, uint16_t pid, TSDEventId event_id, void *data) {
     } else if(event_id == TSD_EVENT_PES) {
         TSDPESPacket *pes = (TSDPESPacket*) data;
         // This is where we would write the PES data into our buffer.
-        Serial.printf("\n====================\n");
-        Serial.printf("PID 0x%x PES Packet, Size: %d, stream_id=0x%x, pts=%llu, dts=%llu\n", pid, pes->data_bytes_length, pes->stream_id, pes->pts, pes->dts);
+        // Serial.printf("\n====================\n");
+        // Serial.printf("PID 0x%x PES Packet, Size: %d, stream_id=0x%x, pts=%llu, dts=%llu\n", pid, pes->data_bytes_length, pes->stream_id, pes->pts, pes->dts);
         
     }
 
@@ -207,7 +207,7 @@ void setup() {
 
     tsd_set_event_callback(&ctx, onTsd);
 
-    rest.data = (uint8_t*)malloc(188);
+    rest.data = (uint8_t*)malloc(TSD_TSPACKET_SIZE);
     rest.size = 0;
 
     udp.onPacket([](AsyncUDPPacket packet) {
@@ -218,28 +218,41 @@ void setup() {
 
       if (rest.size > 0) {
         to_skip = TSD_TSPACKET_SIZE - rest.size;
-        memcpy(rest.data + rest.size, packet.data(), to_skip);   
-        TSDCode res = tsd_demux(&ctx, rest.data, TSD_TSPACKET_SIZE, &parsed);
-        if (res) {
-          Serial.printf("Error decoding rest %d\n", res);
-        }
-        if (parsed != TSD_TSPACKET_SIZE) {
-          Serial.printf("Rest non parsed? %d\n", parsed);
+        if (packet.length() >= to_skip) {
+          memcpy(rest.data + rest.size, packet.data(), to_skip);   
+          TSDCode res = tsd_demux(&ctx, rest.data, TSD_TSPACKET_SIZE, &parsed);
+          rest.size = 0;
+          if (res) {
+            Serial.printf("Error decoding rest %d\n", res);
+          }
+          if (parsed != TSD_TSPACKET_SIZE) {
+            Serial.printf("Rest non parsed? %d\n", parsed);
+          }
         }
       }
 
+      if (packet.length() < to_skip) {
+        Serial.printf("packet too small %d", packet.length());
+        memcpy(rest.data + rest.size, packet.data(), packet.length());
+        rest.size += packet.length();
+      } else if (packet.length() == to_skip) {
+        // we consumed it all!
+        return;
+      }
+
+      
       TSDCode res = tsd_demux(&ctx, packet.data() + to_skip, packet.length() - to_skip, &parsed);
 
       if (res) {
         Serial.printf("TS demux error %d\n", res);
         rest.size = 0; // discard all this thing
       } else {
-        rest.size = packet.length() - parsed;
+        rest.size = packet.length() - to_skip - parsed;
         if (rest.size > TSD_TSPACKET_SIZE) {
-          Serial.printf("TS demux rest too big? %d\b", rest.size);
+          Serial.printf("TS demux rest too big? %d\n", rest.size);
           rest.size = 0; // discard...
         } else if (rest.size > 0) {
-          memcpy(rest.data, packet.data() + parsed, rest.size);
+          memcpy(rest.data, packet.data() + to_skip + parsed, rest.size);
         }
       }
 
